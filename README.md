@@ -391,7 +391,7 @@ correction, please [contact MaxMind support for help](https://support.maxmind.co
 
 ## Requirements
 
-MaxMind has tested this API with Node.js versions 18 and 20.  We aim to support
+MaxMind has tested this API with Node.js versions 18, 20, and 22.  We aim to support
 active and maintained LTS versions of Node.js.
 
 ## Contributing
@@ -413,6 +413,6 @@ client API, please contact [MaxMind support for assistance](https://support.maxm
 
 ## Copyright and License
 
-This software is Copyright (c) 2018-2023 by MaxMind, Inc.
+This software is Copyright (c) 2018-2025 by MaxMind, Inc.
 
 This is free software, licensed under the Apache License, Version 2.0.
