@@ -1,0 +1,15 @@
+{
+  "name": "geoip",
+  "version": "1.0.0",
+  "description": "Node.js GeoLite2 ASN, City, and Country databases",
+  "main": "geoip.js",
+  "scripts": {
+    "start": "node geoip.js"
+  },
+  "author": "universalbit-dev <+393774788289>",
+  "license": "CC-BY-SA-4.0",
+  "dependencies": {
+    "axios": "^1.10.0",
+    "maxmind": "^4.3.27"
+  }
+}
