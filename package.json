@@ -58,6 +58,8 @@
     "prepublishOnly": "npm run build && npm run test && npm run lint && npm run build:docs && npm run deploy:docs"
   },
   "dependencies": {
-    "maxmind": "^4.2.0"
+    "axios": "^1.10.0",
+    "maxmind": "^4.2.0",
+    "geoip": "file:utility"
   }
 }
