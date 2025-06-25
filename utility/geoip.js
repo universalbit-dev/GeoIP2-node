@@ -16,7 +16,7 @@ const maxmind = require('maxmind');
 const path = require('path');
 const fs = require('fs');
 const axios = require('axios');
-const config = require('./geolite_nocitydb.config.js');
+const config = require('./geolite.config.js');
 
 // ====== DNS Lists ======
 const publicDNS = [
