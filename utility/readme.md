@@ -119,7 +119,7 @@ Issues? [Open one here](https://github.com/universalbit-dev/GeoIP2-node/issues).
 ## 📚 References
 
 - [MaxMind GeoLite2 Databases](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data)
-- [Maltiverse API Docs](https://maltiverse.com/api-doc)
+- [Maltiverse API Docs](https://app.swaggerhub.com/apis-docs/maltiverse/api/1.1.3)
 
 ---
 
