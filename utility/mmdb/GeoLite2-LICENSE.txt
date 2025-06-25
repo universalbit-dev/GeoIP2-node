@@ -1,0 +1,5 @@
+This directory contains GeoLite2 data created by MaxMind, available from https://www.maxmind.com.
+
+The GeoLite2 databases are licensed under the Creative Commons Attribution-ShareAlike 4.0 International License (CC BY-SA 4.0).
+
+See https://www.maxmind.com/en/geolite2/eula for full license details.
