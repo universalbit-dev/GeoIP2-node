@@ -1,3 +1,26 @@
+<p align="center">
+  <img src="https://img.icons8.com/color/48/000000/worldwide-location.png" alt="GeoIP" width="48"/>
+</p>
+
+<h2 align="center">🌐 GeoIP2 Utility Tools</h2>
+<p align="center">
+  Powerful scripts and MaxMind database support for DNS lookup & threat intelligence.<br>
+  <strong>Located in <code>utility/</code> directory.</strong>
+</p>
+
+<p align="center">
+  <img src="https://img.icons8.com/fluency/48/000000/shield-with-a-check-mark.png" alt="Threat Intelligence" width="32"/>
+  <img src="https://img.icons8.com/ios-filled/50/000000/dns.png" alt="DNS" width="32"/>
+</p>
+
+---
+
+**What you’ll find:**
+- 🗂️ Prebuilt MaxMind `.mmdb` files for fast offline IP lookups
+- ⚡ [`utility/geoip.js`](utility/geoip.js): Scan public DNS, reveal ASN/Country, check IP reputation with Maltiverse
+- 🛠️ Plug-n-play—just run `node utility/geoip.js` for instant insights
+
+---
 # MaxMind GeoIP2 Node.js API
 
 ## Description
