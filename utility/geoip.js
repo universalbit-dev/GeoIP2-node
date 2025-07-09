@@ -1,15 +1,30 @@
 #!/usr/bin/env node
 /**
  * GeoIP2-node DNS & Threat Intelligence Scanner
- * 
- * - Uses MaxMind GeoIP2 databases (ASN, Country)
- * - Looks up public and provider DNS IPs
- * - Integrates with Maltiverse for threat reputation (with request limiting)
- * - Requires geolite.config.js and MaxMind .mmdb files as specified by config
- * 
- * Usage: node geoip.js
- * 
- * Dependencies: maxmind, axios, path, fs
+ *
+ * Description:
+ *   - Looks up the ASN and country for your current public IP and a set of public (and optionally provider) DNS servers.
+ *   - Prints results to the console.
+ *   - Generates a Maltiverse batch intelligence search link for all scanned IPs for quick manual reputation review.
+ *
+ * Requirements:
+ *   - MaxMind GeoIP2 ASN and Country .mmdb database files (see geolite.config.js for paths/config)
+ *   - Node.js packages: maxmind, axios, path, fs
+ *
+ * Usage:
+ *   node geoip.js
+ *
+ * Customization:
+ *   - To scan your ISP/provider DNS, add them to the `providerDNS` array and uncomment the relevant line in main().
+ *
+ * Output:
+ *   - For each IP: ASN, ASN Number, Country
+ *   - At the end: Maltiverse batch search URL for all scanned IPs
+ *
+ * Note:
+ *   - No city or region lookup for PRIVACY.
+ *   - No direct Maltiverse API queries—manual reputation check via URL.
+ *   - Scans repeat every hour, but only if your public IP has changed.
  */
 
 const maxmind = require('maxmind');
@@ -27,13 +42,6 @@ const publicDNS = [
 // ====== Add your Provider/ISP/Home DNS Lists ======  
 const providerDNS = [];
 
-// ====== Maltiverse Request Limiting ======
-const MALTIVERSE_MAX_REQUESTS = 20;        // Max queries per interval
-const MALTIVERSE_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
-let maltiverseRequestCount = 0;
-let maltiverseQuotaExceeded = false;
-let maltiverseResetTimeout = null;
-
 // ====== IP Change Detection ======
 let lastIP = null;
 
@@ -48,56 +56,14 @@ async function getMyPublicIP() {
   }
 }
 
-function resetMaltiverseQuota() {
-  maltiverseRequestCount = 0;
-  maltiverseQuotaExceeded = false;
-  maltiverseResetTimeout = setTimeout(resetMaltiverseQuota, MALTIVERSE_INTERVAL_MS);
-}
-
-// ====== Maltiverse threat intelligence lookup ======
-async function getMaltiverseInfo(ip) {
-  if (maltiverseQuotaExceeded || maltiverseRequestCount >= MALTIVERSE_MAX_REQUESTS) {
-    maltiverseQuotaExceeded = true;
-    return { reputation: "Skipped (API quota limit reached)", tags: [] };
-  }
-  try {
-    const res = await axios.get(`https://api.maltiverse.com/ip/${ip}`);
-    maltiverseRequestCount++;
-    if (res.status === 200 && res.data) {
-      return {
-        reputation: res.data.reputation,
-        tags: res.data.tags || [],
-      };
-    }
-    return { reputation: "Unknown", tags: [] };
-  } catch (e) {
-    if ((e.response && e.response.status === 403) ||
-        (e.response && e.response.data && typeof e.response.data === 'string' && e.response.data.toLowerCase().includes('quota'))) {
-      maltiverseQuotaExceeded = true;
-      console.error("[!] Maltiverse API quota exceeded. Maltiverse checks will be skipped until the quota resets.");
-      return { reputation: "Skipped (API quota exceeded)", tags: [] };
-    }
-    if (e.response && e.response.status === 404) {
-      return { reputation: "Unknown (not in Maltiverse)", tags: [] };
-    }
-    return { reputation: "Error", tags: [e.message] };
-  }
-}
-
-// ====== MaxMind Lookups ======
 async function lookupIP(ip, asnLookup, countryLookup) {
   const asn = asnLookup.get(ip);
   const country = countryLookup.get(ip);
-  const maltiverse = await getMaltiverseInfo(ip);
 
   console.log(`\nIP: ${ip}`);
   console.log('  ASN:     ', asn?.autonomous_system_organization || 'Not found', `(AS${asn?.autonomous_system_number || 'N/A'})`);
   console.log('  Country: ', country?.country?.names?.en || 'Not found');
-  // City/region lookups are removed
-  console.log('  Maltiverse Reputation:', maltiverse.reputation);
-  if (maltiverse.tags.length > 0) {
-    console.log('  Maltiverse Tags:', maltiverse.tags.join(', '));
-  }
+  // City/region lookups are removed for privacy/clarity
 }
 
 // ====== Database presence and preparation ======
@@ -125,9 +91,15 @@ function logInfo(msg) {
   console.log(`[${now}] [INFO] ${msg}`);
 }
 
+// ====== Maltiverse batch search URL builder ======
+function getMaltiverseSearchURL(ips) {
+  const ipQuery = encodeURIComponent(ips.join(' '));
+  return `https://maltiverse.com/intelligence/search;query=${ipQuery};page=1;sort=creation_time_desc`;
+}
+
 // ====== Main Scan Logic ======
 async function runGeoIPScan(asnLookup, countryLookup, dnsList, label) {
-  logInfo(`GeoIP/Maltiverse scan using: ${label}`);
+  logInfo(`GeoIP scan using: ${label}`);
   const myip = await getMyPublicIP();
   if (!myip) return;
 
@@ -138,10 +110,14 @@ async function runGeoIPScan(asnLookup, countryLookup, dnsList, label) {
     console.log(`\nUsing DNS list: [${label}]`);
 
     for (const ip of ips) {
-      if (maltiverseQuotaExceeded) {
-        console.warn("[!] Maltiverse checks are paused due to quota. Only MaxMind lookups performed.");
-      }
       await lookupIP(ip, asnLookup, countryLookup);
+    }
+
+    // Print Maltiverse batch search URL for all scanned IPs
+    if (ips.length > 1) {
+      console.log(
+        `\nMaltiverse Intel Web Search: ${getMaltiverseSearchURL(ips)}\n`
+      );
     }
   } else {
     logInfo("No IP change detected, skipping scan.");
@@ -151,13 +127,10 @@ async function runGeoIPScan(asnLookup, countryLookup, dnsList, label) {
 async function main() {
   const [asnLookup, countryLookup] = await prepareLookups();
 
-  // Start/reset Maltiverse quota timer
-  resetMaltiverseQuota();
-
   // 1. Public DNS
   await runGeoIPScan(asnLookup, countryLookup, publicDNS, 'Public DNS');
 
-  // 2. Provider/ISP/Home DNS uncomment for use ISP DNS
+  // 2. Provider/ISP/Home DNS uncomment to use ISP DNS
   // await runGeoIPScan(asnLookup, countryLookup, providerDNS, 'Provider/Home DNS');
 
   // 3. Continuous Monitoring (Every hour)
