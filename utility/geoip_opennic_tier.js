@@ -2,6 +2,10 @@
 const axios = require('axios');
 const OPENNIC_GEOIP_URL = 'https://api.opennicproject.org/geoip/?list&adm=3';
 
+// Regex for IPv4 and IPv6 matching
+const ipv4Regex = /^([0-9]{1,3}\.){3}[0-9]{1,3}$/;
+const ipv6Regex = /^([a-fA-F0-9:]+:+)+[a-fA-F0-9]+$/;
+
 /**
  * Fetch nearest OpenNIC Tier 2 DNS servers via GeoIP API.
  * Returns a deduplicated array of IPs.
@@ -9,17 +13,20 @@ const OPENNIC_GEOIP_URL = 'https://api.opennicproject.org/geoip/?list&adm=3';
 async function fetchOpenNICTierServers() {
   try {
     const response = await axios.get(OPENNIC_GEOIP_URL);
+
     const servers = [];
-    const lines = response.data.split('\n');
+    const lines = response.data.split('\n').map(l => l.trim()).filter(Boolean);
+
     for (const line of lines) {
       // Example line: "94.247.43.254 ns7.de.dns.opennic.glue"
-      const ipMatch = line.match(/^(([0-9]{1,3}\.){3}[0-9]{1,3}|([a-fA-F0-9:]+:+)+[a-fA-F0-9]+)\s*/);
-      const hostMatch = line.match(/\s([\w.-]+\.[\w.-]+)$/);
-      if (ipMatch) {
-        servers.push({
-          ip: ipMatch[1],
-          hostname: hostMatch ? hostMatch[1] : null
-        });
+      const parts = line.split(/\s+/);
+      if (parts.length < 2) continue; // Skip malformed lines
+
+      const ip = parts[0];
+      const hostname = parts.slice(1).join(' ');
+
+      if (ipv4Regex.test(ip) || ipv6Regex.test(ip)) {
+        servers.push({ ip, hostname });
       }
     }
     // Deduplicate IPs before returning
