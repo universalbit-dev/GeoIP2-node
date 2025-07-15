@@ -1,7 +1,7 @@
 {
   "name": "geoip",
   "version": "1.0.0",
-  "description": "Node.js GeoLite2 ASN and Country databases",
+  "description": "Node.js GeoLite2 ASN, City, and Country databases",
   "main": "geoip.js",
   "scripts": {
     "start": "node geoip.js"
@@ -12,6 +12,7 @@
     "axios": "^1.10.0",
     "cheerio": "^1.1.0",
     "dotenv": "^17.2.0",
-    "maxmind": "^4.3.27"
+    "maxmind": "^4.3.27",
+    "net": "^1.0.2"
   }
 }
