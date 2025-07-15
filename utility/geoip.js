@@ -33,6 +33,9 @@ const fs = require('fs');
 const axios = require('axios');
 const config = require('./geolite.config.js');
 
+// ====== OpenNIC Tier 2 DNS integration ======
+const { fetchOpenNICTierServers } = require('./geoip_opennic_tier');
+
 // ====== DNS Lists ======
 const publicDNS = [
   '1.1.1.1', '1.0.0.1', '8.8.8.8', '8.8.4.4',
@@ -40,7 +43,7 @@ const publicDNS = [
   '193.110.81.254', '185.253.5.254', '194.242.2.2', '91.239.100.100'
 ];
 // ====== Add your Provider/ISP/Home DNS Lists ======  
-const providerDNS = [];
+const providerDNS = []; // Add your ISP DNS here
 
 // ====== IP Change Detection ======
 let lastIP = null;
@@ -100,42 +103,92 @@ function getMaltiverseSearchURL(ips) {
 // ====== Main Scan Logic ======
 async function runGeoIPScan(asnLookup, countryLookup, dnsList, label) {
   logInfo(`GeoIP scan using: ${label}`);
-  const myip = await getMyPublicIP();
-  if (!myip) return;
-
-  // Only scan if IP changed
-  if (myip !== lastIP) {
-    lastIP = myip;
-    const ips = Array.from(new Set([myip, ...dnsList]));
-    console.log(`\nUsing DNS list: [${label}]`);
-
-    for (const ip of ips) {
-      await lookupIP(ip, asnLookup, countryLookup);
-    }
-
-    // Print Maltiverse batch search URL for all scanned IPs
-    if (ips.length > 1) {
-      console.log(
-        `\nMaltiverse Intel Web Search: ${getMaltiverseSearchURL(ips)}\n`
-      );
-    }
-  } else {
-    logInfo("No IP change detected, skipping scan.");
+  for (const ip of dnsList) {
+    await lookupIP(ip, asnLookup, countryLookup);
   }
 }
 
+// ====== Main Entrypoint ======
 async function main() {
   const [asnLookup, countryLookup] = await prepareLookups();
+  const myip = await getMyPublicIP();
+  if (!myip) return;
 
-  // 1. Public DNS
-  await runGeoIPScan(asnLookup, countryLookup, publicDNS, 'Public DNS');
+  // Fetch OpenNIC Tier 2 DNS (dynamic)
+  let openNICIPs = [];
+  try {
+    const openNICTierServers = await fetchOpenNICTierServers();
+    // If geoip_opennic_tier.js returns objects, extract just the IPs:
+    openNICIPs = Array.isArray(openNICTierServers) && openNICTierServers.length && typeof openNICTierServers[0] === 'object'
+      ? openNICTierServers.map(s => s.ip)
+      : openNICTierServers;
+  } catch (err) {
+    logInfo('Error fetching OpenNIC Tier 2 DNS: ' + err.message);
+  }
 
-  // 2. Provider/ISP/Home DNS uncomment to use ISP DNS
-  // await runGeoIPScan(asnLookup, countryLookup, providerDNS, 'Provider/Home DNS');
+  // Combine all IPs (public, provider, OpenNIC Tier 2)
+  const allIPs = Array.from(new Set([myip, ...publicDNS, ...providerDNS, ...openNICIPs]));
 
-  // 3. Continuous Monitoring (Every hour)
-  setInterval(() => {
-    runGeoIPScan(asnLookup, countryLookup, publicDNS, 'Public DNS');
+  if (myip !== lastIP) {
+    lastIP = myip;
+
+    // Scan Public DNS
+    await runGeoIPScan(asnLookup, countryLookup, [myip, ...publicDNS], 'Public DNS');
+
+    // Scan Provider/ISP DNS (uncomment if using)
+    // await runGeoIPScan(asnLookup, countryLookup, providerDNS, 'Provider/Home DNS');
+
+    // Scan OpenNIC Tier 2 DNS
+    if (openNICIPs.length > 0) {
+      await runGeoIPScan(asnLookup, countryLookup, openNICIPs, 'OpenNIC Tier 2 DNS');
+    } else {
+      logInfo('No OpenNIC Tier 2 DNS servers found from API.');
+    }
+
+    // Print Maltiverse batch search URL for all scanned IPs (including Tier servers)
+    console.log(
+      `\nMaltiverse Intel Web Search: ${getMaltiverseSearchURL(allIPs)}\n`
+    );
+  } else {
+    logInfo("No IP change detected, skipping scan.");
+    // Still print the Maltiverse batch search URL for all IPs (helpful for review)
+    console.log(
+      `\nMaltiverse Intel Web Search: ${getMaltiverseSearchURL(allIPs)}\n`
+    );
+  }
+
+  // Continuous Monitoring (Every hour)
+  setInterval(async () => {
+    const myip = await getMyPublicIP();
+    let openNICIPs = [];
+    try {
+      const openNICTierServers = await fetchOpenNICTierServers();
+      openNICIPs = Array.isArray(openNICTierServers) && openNICTierServers.length && typeof openNICTierServers[0] === 'object'
+        ? openNICTierServers.map(s => s.ip)
+        : openNICTierServers;
+    } catch (err) {
+      logInfo('Error fetching OpenNIC Tier 2 DNS (interval): ' + err.message);
+    }
+
+    const allIPs = Array.from(new Set([myip, ...publicDNS, ...providerDNS, ...openNICIPs]));
+
+    if (myip !== lastIP) {
+      lastIP = myip;
+
+      await runGeoIPScan(asnLookup, countryLookup, [myip, ...publicDNS], 'Public DNS');
+      // await runGeoIPScan(asnLookup, countryLookup, providerDNS, 'Provider/Home DNS');
+      if (openNICIPs.length > 0) {
+        await runGeoIPScan(asnLookup, countryLookup, openNICIPs, 'OpenNIC Tier 2 DNS');
+      }
+      console.log(
+        `\nMaltiverse Intel Web Search: ${getMaltiverseSearchURL(allIPs)}\n`
+      );
+    } else {
+      logInfo("No IP change detected, skipping scan.");
+      console.log(
+        `\nMaltiverse Intel Web Search: ${getMaltiverseSearchURL(allIPs)}\n`
+      );
+    }
   }, 60 * 60 * 1000);
 }
 
