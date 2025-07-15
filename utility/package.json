@@ -1,7 +1,7 @@
 {
   "name": "geoip",
   "version": "1.0.0",
-  "description": "Node.js GeoLite2 ASN, City, and Country databases",
+  "description": "Node.js GeoLite2 ASN and Country databases",
   "main": "geoip.js",
   "scripts": {
     "start": "node geoip.js"
