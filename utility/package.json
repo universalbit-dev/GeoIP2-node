@@ -10,6 +10,8 @@
   "license": "CC-BY-SA-4.0",
   "dependencies": {
     "axios": "^1.10.0",
+    "cheerio": "^1.1.0",
+    "dotenv": "^17.2.0",
     "maxmind": "^4.3.27"
   }
 }

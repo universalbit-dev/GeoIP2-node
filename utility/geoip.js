@@ -8,14 +8,14 @@
  *   - Generates a Maltiverse batch intelligence search link for all scanned IPs for quick manual reputation review.
  *
  * Requirements:
- *   - MaxMind GeoIP2 ASN and Country .mmdb database files (see geolite.config.js for paths/config)
- *   - Node.js packages: maxmind, axios, path, fs
+ *   - MaxMind GeoIP2 ASN and Country .mmdb database files (see .env for paths/config)
+ *   - Node.js packages: maxmind, axios, path, fs, dotenv
  *
  * Usage:
  *   node geoip.js
  *
  * Customization:
- *   - To scan your ISP/provider DNS, add them to the `providerDNS` array and uncomment the relevant line in main().
+ *   - To scan your ISP/provider DNS, add them to the PROVIDER_DNS entry in your .env file.
  *
  * Output:
  *   - For each IP: ASN, ASN Number, Country
@@ -27,23 +27,19 @@
  *   - Scans repeat every hour, but only if your public IP has changed.
  */
 
+require('dotenv').config();
+
 const maxmind = require('maxmind');
 const path = require('path');
 const fs = require('fs');
 const axios = require('axios');
-const config = require('./geolite.config.js');
 
 // ====== OpenNIC Tier 2 DNS integration ======
 const { fetchOpenNICTierServers } = require('./geoip_opennic_tier');
 
-// ====== DNS Lists ======
-const publicDNS = [
-  '1.1.1.1', '1.0.0.1', '8.8.8.8', '8.8.4.4',
-  '185.222.222.222', '45.11.45.11', '76.76.2.0', '76.76.10.0',
-  '193.110.81.254', '185.253.5.254', '194.242.2.2', '91.239.100.100'
-];
-// ====== Add your Provider/ISP/Home DNS Lists ======  
-const providerDNS = []; // Add your ISP DNS here
+// ====== DNS Lists from .env ======
+const publicDNS = process.env.PUBLIC_DNS ? process.env.PUBLIC_DNS.split(',').map(ip => ip.trim()) : [];
+const providerDNS = process.env.PROVIDER_DNS ? process.env.PROVIDER_DNS.split(',').map(ip => ip.trim()).filter(Boolean) : [];
 
 // ====== IP Change Detection ======
 let lastIP = null;
@@ -72,8 +68,8 @@ async function lookupIP(ip, asnLookup, countryLookup) {
 // ====== Database presence and preparation ======
 async function prepareLookups() {
   const dbPaths = {
-    asn: path.join(config.mmdbDir, config.asnDb),
-    country: path.join(config.mmdbDir, config.countryDb)
+    asn: path.join(process.env.MMDB_DIR, process.env.ASN_DB),
+    country: path.join(process.env.MMDB_DIR, process.env.COUNTRY_DB)
   };
 
   for (const dbPath of Object.values(dbPaths)) {
@@ -118,7 +114,6 @@ async function main() {
   let openNICIPs = [];
   try {
     const openNICTierServers = await fetchOpenNICTierServers();
-    // If geoip_opennic_tier.js returns objects, extract just the IPs:
     openNICIPs = Array.isArray(openNICTierServers) && openNICTierServers.length && typeof openNICTierServers[0] === 'object'
       ? openNICTierServers.map(s => s.ip)
       : openNICTierServers;
@@ -126,7 +121,7 @@ async function main() {
     logInfo('Error fetching OpenNIC Tier 2 DNS: ' + err.message);
   }
 
-  // Combine all IPs (public, provider, OpenNIC Tier 2)
+  // Combine all IPs (public, provider, OpenNIC Tier 2) and deduplicate
   const allIPs = Array.from(new Set([myip, ...publicDNS, ...providerDNS, ...openNICIPs]));
 
   if (myip !== lastIP) {
@@ -135,8 +130,10 @@ async function main() {
     // Scan Public DNS
     await runGeoIPScan(asnLookup, countryLookup, [myip, ...publicDNS], 'Public DNS');
 
-    // Scan Provider/ISP DNS (uncomment if using)
-    // await runGeoIPScan(asnLookup, countryLookup, providerDNS, 'Provider/Home DNS');
+    // Scan Provider/ISP DNS (if any)
+    if (providerDNS.length > 0) {
+      await runGeoIPScan(asnLookup, countryLookup, providerDNS, 'Provider/Home DNS');
+    }
 
     // Scan OpenNIC Tier 2 DNS
     if (openNICIPs.length > 0) {
@@ -157,7 +154,8 @@ async function main() {
     );
   }
 
-  // Continuous Monitoring (Every hour)
+  // Continuous Monitoring (interval from .env, default 3600 sec)
+  const scanInterval = Number(process.env.SCAN_INTERVAL) || 3600;
   setInterval(async () => {
     const myip = await getMyPublicIP();
     let openNICIPs = [];
@@ -176,7 +174,9 @@ async function main() {
       lastIP = myip;
 
       await runGeoIPScan(asnLookup, countryLookup, [myip, ...publicDNS], 'Public DNS');
-      // await runGeoIPScan(asnLookup, countryLookup, providerDNS, 'Provider/Home DNS');
+      if (providerDNS.length > 0) {
+        await runGeoIPScan(asnLookup, countryLookup, providerDNS, 'Provider/Home DNS');
+      }
       if (openNICIPs.length > 0) {
         await runGeoIPScan(asnLookup, countryLookup, openNICIPs, 'OpenNIC Tier 2 DNS');
       }
@@ -189,7 +189,7 @@ async function main() {
         `\nMaltiverse Intel Web Search: ${getMaltiverseSearchURL(allIPs)}\n`
       );
     }
-  }, 60 * 60 * 1000);
+  }, scanInterval * 1000);
 }
 
 main();
