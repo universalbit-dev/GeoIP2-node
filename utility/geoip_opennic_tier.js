@@ -1,40 +1,53 @@
 // geoip_opennic_tier.js
-const axios = require('axios');
+const { exec } = require('child_process');
 const net = require('net');
-const OPENNIC_GEOIP_URL = 'https://api.opennicproject.org/geoip';
+
+const OPENNIC_GEOIP_URL = 'https://api.opennicproject.org/geoip/?json';
 
 /**
- * Fetch nearest OpenNIC Tier 2 DNS servers via GeoIP API.
+ * Fetch nearest OpenNIC Tier 2 DNS servers via GeoIP API (JSON, via curl).
  * Returns a deduplicated array of { ip, hostname } objects.
  */
 async function fetchOpenNICTierServers() {
-  try {
-    const response = await axios.get(OPENNIC_GEOIP_URL);
-    const servers = [];
-    const seen = new Set();
-
-    // Split and process each non-empty line
-    const lines = response.data.split('\n').map(l => l.trim()).filter(Boolean);
-
-    for (const line of lines) {
-      
-      const parts = line.split(/\s+/);
-      if (parts.length < 2) continue; // Skip malformed lines
-
-      const ip = parts[0];
-      const hostname = parts.slice(1).join(' ');
-
-      if (net.isIP(ip) && !seen.has(ip)) {
-        servers.push({ ip, hostname });
-        seen.add(ip);
+  return new Promise((resolve, reject) => {
+    exec(`curl -s "${OPENNIC_GEOIP_URL}"`, (err, stdout, stderr) => {
+      if (err) {
+        console.error('Failed to fetch OpenNIC Tier servers:', err);
+        resolve([]); // For compatibility with old code
+        return;
       }
-    }
+      let data;
+      try {
+        data = JSON.parse(stdout);
+      } catch (parseError) {
+        console.error('Failed to parse JSON from API:', parseError);
+        resolve([]);
+        return;
+      }
+      const servers = [];
+      const seen = new Set();
+      for (const entry of data) {
+        const ip = entry.ip;
+        const hostname = entry.short;
+        if (net.isIP(ip) && !seen.has(ip)) {
+          servers.push({ ip, hostname });
+          seen.add(ip);
+        }
+      }
+      resolve(servers);
+    });
+  });
+}
 
-    return servers;
-  } catch (err) {
-    console.error('Failed to fetch OpenNIC Tier servers:', err.message);
-    return [];
-  }
+if (require.main === module) {
+  (async () => {
+    const servers = await fetchOpenNICTierServers();
+    if (servers.length === 0) {
+      console.log('No OpenNIC Tier 2 DNS servers found from API.');
+    } else {
+      console.log('OpenNIC Tier 2 DNS servers:', servers);
+    }
+  })();
 }
 
 module.exports = { fetchOpenNICTierServers };
