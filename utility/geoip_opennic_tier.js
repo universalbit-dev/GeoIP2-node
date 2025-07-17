@@ -1,7 +1,7 @@
 // geoip_opennic_tier.js
 const axios = require('axios');
 const net = require('net');
-const OPENNIC_GEOIP_URL = 'https://api.opennicproject.org/geoip/?list&adm=3';
+const OPENNIC_GEOIP_URL = 'https://api.opennicproject.org/geoip';
 
 /**
  * Fetch nearest OpenNIC Tier 2 DNS servers via GeoIP API.
