@@ -381,7 +381,8 @@ If the database buffer is not a valid database, an `InvalidDbBufferError` will
 be thrown.
 
 ## Values to use for Database or Object Keys
-
+- [Disambiguation on Wikipedia](https://en.wikipedia.org/wiki/Wikipedia:Disambiguation)
+- The documentation within each sub-project directory.
 We strongly discourage you from using a value from any `names` property as a
 key in a database or object.
 
