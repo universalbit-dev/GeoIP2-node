@@ -2,11 +2,11 @@
   <img src="https://img.icons8.com/color/48/000000/worldwide-location.png" alt="GeoIP" width="48"/>
 </p>
 
-<h2 align="center">🌐 GeoIP2 Utility Tools</h2>
 <p align="center">
   Powerful scripts and MaxMind database support for DNS lookup & threat intelligence.<br>
-  <strong>Located in <code>utility/</code> directory.</strong>
+  <strong>Located in <a href="https://github.com/universalbit-dev/GeoIP2-node/tree/main/utility"><code>utility/</code> directory</a>.</strong>
 </p>
+
 
 <p align="center">
   <a href="https://maltiverse.com/">
