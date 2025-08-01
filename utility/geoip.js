@@ -44,6 +44,37 @@ const providerDNS = process.env.PROVIDER_DNS ? process.env.PROVIDER_DNS.split(',
 // ====== IP Change Detection ======
 let lastIP = null;
 
+// ====== Maltiverse API integration ======
+const USE_MALTIVERSE_API = (process.env.USE_MALTIVERSE_API || 'false').toLowerCase() === 'true';
+const MALTIVERSE_API_KEY = process.env.MALTIVERSE_API_KEY;
+const MALTIVERSE_API_QUOTA = Number(process.env.MALTIVERSE_API_QUOTA) || 100;
+let maltiverseApiCount = 0;
+
+async function queryMaltiverse(ip) {
+  if (!USE_MALTIVERSE_API || !MALTIVERSE_API_KEY) return null;
+  if (maltiverseApiCount >= MALTIVERSE_API_QUOTA) {
+    console.log('  Maltiverse API quota reached; skipping direct lookup.');
+    return null;
+  }
+  try {
+    const res = await axios.get(`https://api.maltiverse.com/ip/${ip}`, {
+      headers: {
+        Authorization: `Bearer ${MALTIVERSE_API_KEY}`
+      },
+      timeout: 3000
+    });
+    maltiverseApiCount++;
+    return res.data;
+  } catch (e) {
+    if (e.response && e.response.status === 404) {
+      console.log('  Maltiverse: Not found');
+    } else {
+      console.log('  Maltiverse API error:', e.message);
+    }
+    return null;
+  }
+}
+
 // ====== Helper Functions ======
 async function getMyPublicIP() {
   try {
@@ -63,6 +94,19 @@ async function lookupIP(ip, asnLookup, countryLookup) {
   console.log('  ASN:     ', asn?.autonomous_system_organization || 'Not found', `(AS${asn?.autonomous_system_number || 'N/A'})`);
   console.log('  Country: ', country?.country?.names?.en || 'Not found');
   // City/region lookups are removed for privacy/clarity
+
+  // ====== Maltiverse API reputation lookup ======
+  if (USE_MALTIVERSE_API && MALTIVERSE_API_KEY) {
+    const threat = await queryMaltiverse(ip);
+    if (threat && threat.classification) {
+      console.log('  Maltiverse:', threat.classification, threat.tag?.length ? `(${threat.tag.join(', ')})` : '');
+      if (Array.isArray(threat.blacklist) && threat.blacklist.length > 0) {
+        threat.blacklist.forEach(entry => {
+          console.log(`    - Blacklist: ${entry.description} [${entry.source}]`);
+        });
+      }
+    }
+  }
 }
 
 // ====== Database presence and preparation ======
