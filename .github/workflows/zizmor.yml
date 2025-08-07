@@ -22,11 +22,11 @@ jobs:
           persist-credentials: false
 
       - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@b5f58b2abc5763ade55e4e9d0fe52cd1ff7979ca
+        uses: astral-sh/setup-uv@e92bafb6253dcd438e0484186d7669ea7a8ca1cc # 6.4.3
         with:
           enable-cache: false
 
       - name: Run zizmor
-        run: uvx zizmor@1.5.1 --format plain .
+        run: uvx zizmor@1.11.0 --format plain .
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
