@@ -1,4 +1,10 @@
 <p align="center">
+  <img src="https://img.shields.io/badge/Node.js-22.x-brightgreen?logo=node.js&logoColor=white" alt="Node.js 22.x">
+</p>
+
+> ⚡️ **Heads up!** For the smoothest experience, we recommend running this project with **Node.js version 22.x**.  
+> While other versions may work, Node.js 22 is suggested and fully tested for best compatibility and performance.
+<p align="center">
   <img src="https://img.icons8.com/color/48/000000/worldwide-location.png" alt="GeoIP" width="48"/>
 </p>
 
