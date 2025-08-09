@@ -2,9 +2,9 @@ name: Node.js CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ geoip-maltiverse ]
   pull_request:
-    branches: [ main ]
+    branches: [ geoip-maltiverse ]
   workflow_dispatch:
 
 jobs:
