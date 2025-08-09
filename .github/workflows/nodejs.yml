@@ -1,0 +1,36 @@
+name: Node.js CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install root dependencies
+        run: npm install
+
+      - name: Fix Vulnerabilities in root
+        run: npm audit fix
+
+      - name: Install utility dependencies
+        run: |
+          cd utility
+          npm install
+
+      - name: Fix Vulnerabilities in utility
+        run: |
+          cd utility
+          npm audit fix
