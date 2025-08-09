@@ -1,10 +1,11 @@
 name: Node.js CI
-
+permissions:
+  contents: read
 on:
   push:
-    branches: [ geoip-maltiverse ]
+    branches: [ geoip2-maltiverse ]
   pull_request:
-    branches: [ geoip-maltiverse ]
+    branches: [ geoip2-maltiverse ]
   workflow_dispatch:
 
 jobs:
