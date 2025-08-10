@@ -35,3 +35,7 @@ jobs:
         run: |
           cd utility
           npm audit fix
+      - name: Run geoip.js in utility
+        run: |
+        cd utility
+        node geoip.js
