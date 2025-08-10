@@ -40,4 +40,4 @@ jobs:
       - name: Run Maltiverse GeoIP script
         env:
           MALTIVERSE_TOKEN: ${{ secrets.MALTIVERSE_TOKEN }}
-        run: node .github/workflows/scripts/geoip.js 1.1.1.1
+        run: node .github/scripts/geoip.js 1.1.1.1
