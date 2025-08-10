@@ -1,6 +1,7 @@
 name: Node.js CI
 permissions:
   contents: read
+
 on:
   push:
     branches: [ geoip2-maltiverse ]
@@ -35,7 +36,8 @@ jobs:
         run: |
           cd utility
           npm audit fix
+
       - name: Run geoip.js in utility
         run: |
-        cd utility
-        node geoip.js
+          cd utility
+          node geoip.js
