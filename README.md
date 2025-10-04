@@ -8,20 +8,9 @@
   <img src="https://img.icons8.com/color/48/000000/worldwide-location.png" alt="GeoIP" width="48"/>
 </p>
 
-<h2 align="center">🌐 GeoIP2 Utility Tools</h2>
-<p align="center">
-  Powerful scripts and MaxMind database support for DNS lookup & threat intelligence.<br>
-  <strong>Located in <code>utility/</code> directory.</strong>
-</p>
-
-<p align="center">
-  <a href="https://maltiverse.com/">
-  <img src="https://img.icons8.com/fluency/48/000000/shield-with-a-check-mark.png" alt="Threat Intelligence" width="32"/>
-</a>
-
-  <img src="https://img.icons8.com/ios-filled/50/000000/dns.png" alt="DNS" width="32"/>
-</p>
-
+🌐 **[GeoIP2 Utility Tools](https://github.com/universalbit-dev/GeoIP2-node/tree/geoip2-maltiverse/utility)**
+   - Powerful scripts and MaxMind database support for DNS lookup & threat intelligence
+   
 ---
 
 **What you’ll find:**
