@@ -27,7 +27,7 @@ A command-line utility for security professionals and sysadmins to:
 ## ⚡ Usage
 
 ```bash
-npm i & npm audit fix
+npm i && npm audit fix
 node geoip.js
 ```
 
