@@ -57,13 +57,5 @@
     "test:watch": "jest --watch",
     "prepublishOnly": "npm run build && npm run test && npm run lint && npm run build:docs && npm run deploy:docs"
   },
-  "dependencies": {
-<<<<<<< HEAD
-    "axios": "^1.10.0",
-    "maxmind": "^4.2.0",
-    "geoip": "file:utility"
-=======
-    "maxmind": "^5.0.0"
->>>>>>> upstream/main
-  }
+  "dependencies": {}
 }
