@@ -17,7 +17,7 @@
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-
+require('dotenv').config({ path: path.join(__dirname, 'utility', '.env') });
 // ====== Config & Lists ======
 const GEOIP_PROVIDER = process.env.GEOIP_PROVIDER || 'ip-api'; // 'ip-api' or 'ipinfo' (if token provided)
 const GEOIP_PROVIDER_TOKEN = process.env.GEOIP_PROVIDER_TOKEN || process.env.IPINFO_TOKEN || '';
