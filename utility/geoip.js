@@ -22,7 +22,7 @@ const path = require('path');
 const GEOIP_PROVIDER = process.env.GEOIP_PROVIDER || 'ip-api'; // 'ip-api' or 'ipinfo' (if token provided)
 const GEOIP_PROVIDER_TOKEN = process.env.GEOIP_PROVIDER_TOKEN || process.env.IPINFO_TOKEN || '';
 const GEOIP_CACHE_TTL_SECS = parseInt(process.env.GEOIP_CACHE_TTL_SECS || '86400', 10); // 24h default
-const CACHE_DIR = path.join(__dirname, 'utility', 'cache');
+const CACHE_DIR = path.join(__dirname, 'cache');
 
 const publicDNS = [
   '1.1.1.1', '1.0.0.1', '8.8.8.8', '8.8.4.4',
