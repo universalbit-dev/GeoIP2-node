@@ -71,3 +71,6 @@ local
 
 # Claude config
 .claude
+
+*.mmdb
+utility/mmdb/
