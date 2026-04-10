@@ -1,0 +1,86 @@
+name: GeoIP2 Maltiverse Scanner
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [ geoip2-maltiverse ]
+  pull_request:
+    branches: [ geoip2-maltiverse ]
+  schedule:
+    # Run every day at 06:00 UTC
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      ip_address:
+        description: 'IP address to look up (optional, defaults to scan list)'
+        required: false
+        default: '1.1.1.1'
+
+jobs:
+  geoip2-maltiverse:
+    name: GeoIP2 + Maltiverse Lookup
+    runs-on: ubuntu-latest
+    environment: MALTIVERSE
+
+    steps:
+      # ── 1. Checkout ─────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Set up Node.js ────────────────────────────────────────────────────
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # ── 3. Install & audit root dependencies ────────────────────────────────
+      - name: Install root dependencies
+        run: npm install
+
+      - name: Audit root dependencies
+        run: npm audit fix --force || true
+
+      # ── 4. Install & audit utility dependencies ──────────────────────────────
+      - name: Install utility dependencies
+        working-directory: utility
+        run: npm install
+
+      - name: Audit utility dependencies
+        working-directory: utility
+        run: npm audit fix --force || true
+
+      # ── 5. Run GeoIP2 + Maltiverse scan ─────────────────────────────────────
+      #
+      #  The utility/geoip.js script uses:
+      #    - ip-api.com (no key needed) or ipinfo.io (needs GEOIP_PROVIDER_TOKEN)
+      #    - Maltiverse API  → MALTIVERSE_API_KEY
+      #    - MaxMind GeoIP2  → https://maxmind.github.io/GeoIP2-node/
+      #
+      - name: Run GeoIP2 + Maltiverse scan
+        working-directory: utility
+        env:
+          # Maltiverse threat-intel API key (store in repo → Settings → Secrets)
+          MALTIVERSE_API_KEY: ${{ secrets.MALTIVERSE_API_KEY }}
+          # Optional: 'ipinfo' to use ipinfo.io instead of ip-api.com
+          GEOIP_PROVIDER: ${{ vars.GEOIP_PROVIDER || 'ip-api' }}
+          # Optional: ipinfo.io token (only needed when GEOIP_PROVIDER=ipinfo)
+          GEOIP_PROVIDER_TOKEN: ${{ secrets.GEOIP_PROVIDER_TOKEN }}
+          # Maltiverse quota per hour (default 20)
+          MALTIVERSE_QUOTA_PER_HOUR: ${{ vars.MALTIVERSE_QUOTA_PER_HOUR || '20' }}
+          # GeoIP cache TTL in seconds (default 86400 = 24 h)
+          GEOIP_CACHE_TTL_SECS: ${{ vars.GEOIP_CACHE_TTL_SECS || '86400' }}
+          # IP to look up when triggered manually
+          TARGET_IP: ${{ github.event.inputs.ip_address || '1.1.1.1' }}
+        run: node geoip.js ${{ env.TARGET_IP }}
+
+      # ── 6. Upload cache (optional, speeds up subsequent runs) ────────────────
+      - name: Upload GeoIP cache artefact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: geoip-cache-${{ github.run_id }}
+          path: utility/cache/
+          retention-days: 3
