@@ -2,24 +2,28 @@
 /**
  * GeoIP2-node DNS & Threat Intelligence Scanner (No MMDB)
  *
- *  - simple disk-backed caching for GeoIP and Maltiverse results (TTL configurable)
+ *  - simple disk-backed caching for GeoIP, Maltiverse, and Spamhaus results (TTL configurable)
  *  - Maltiverse API key support via env var MALTIVERSE_API_KEY
  *  - Maltiverse quota limiting and graceful skipping when quota reached
+ *  - Spamhaus DNSBL check via zen.spamhaus.org (no API key required, DNS-based)
+ *  - Maltiverse and Spamhaus are ONE-SHOT per IP: results cached, never re-queried in the periodic loop
  *
  * Usage:
  *   export MALTIVERSE_API_KEY="your_key"            # optional, for Maltiverse
  *   export GEOIP_PROVIDER="ip-api"                  # optional, defaults to ip-api
  *   export GEOIP_CACHE_TTL_SECS=86400               # optional, default 24h
- *   node geoip.js
- *
+ *   node geoip.js                                   # continuous mode
+ *   node geoip.js <ip>                              # one-shot mode
  */
 
 const axios = require('axios');
+const dns = require('dns').promises;
 const fs = require('fs');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, 'utility', '.env') });
+
 // ====== Config & Lists ======
-const GEOIP_PROVIDER = process.env.GEOIP_PROVIDER || 'ip-api'; // 'ip-api' or 'ipinfo' (if token provided)
+const GEOIP_PROVIDER = process.env.GEOIP_PROVIDER || 'ip-api';
 const GEOIP_PROVIDER_TOKEN = process.env.GEOIP_PROVIDER_TOKEN || process.env.IPINFO_TOKEN || '';
 const GEOIP_CACHE_TTL_SECS = parseInt(process.env.GEOIP_CACHE_TTL_SECS || '86400', 10); // 24h default
 const CACHE_DIR = path.join(__dirname, 'cache');
@@ -81,19 +85,22 @@ function isExpired(entry) {
 }
 
 // Load caches
-const geoipCache = loadCache('geoip_cache');          // { ip: { _ts: ms, data: {...} } }
-const maltiverseCache = loadCache('maltiverse_cache'); // same shape
+const geoipCache      = loadCache('geoip_cache');       // { ip: { _ts: ms, data: {...} } }
+const maltiverseCache = loadCache('maltiverse_cache');   // same shape
+const spamhausCache   = loadCache('spamhaus_cache');     // same shape
 
 // Persist caches periodically
 setInterval(() => {
   saveCache('geoip_cache', geoipCache);
   saveCache('maltiverse_cache', maltiverseCache);
+  saveCache('spamhaus_cache', spamhausCache);
 }, 30 * 1000);
 
 // Save caches on exit
 process.on('exit', () => {
   saveCache('geoip_cache', geoipCache);
   saveCache('maltiverse_cache', maltiverseCache);
+  saveCache('spamhaus_cache', spamhausCache);
 });
 process.on('SIGINT', () => process.exit());
 process.on('SIGTERM', () => process.exit());
@@ -111,45 +118,33 @@ function logErr(msg) {
 
 // ====== GeoIP via external providers ======
 async function geoipLookupExternal(ip) {
-  // Check cache
   const cached = geoipCache[ip];
   if (cached && !isExpired(cached)) {
     return cached.data;
   }
 
-  // Provider implementations
   try {
     let res;
     if (GEOIP_PROVIDER === 'ipinfo' && GEOIP_PROVIDER_TOKEN) {
-      // ipinfo.io: GET https://ipinfo.io/<ip>/json?token=TOKEN
-      const url = `https://ipinfo.io/${encodeURIComponent(ip)}/json${GEOIP_PROVIDER_TOKEN ? `?token=${GEOIP_PROVIDER_TOKEN}` : ''}`;
+      const url = `https://ipinfo.io/${encodeURIComponent(ip)}/json?token=${GEOIP_PROVIDER_TOKEN}`;
       res = await axios.get(url, { timeout: 10_000 });
-      // ipinfo returns "org": "AS15169 Google LLC"
-      const org = res.data.org || '';
-      const parsed = parseAsField(org);
+      const parsed = parseAsField(res.data.org || '');
       const out = {
-        ip: ip,
-        country: (res.data.country || null),
-        asn: parsed.asn,
-        as_org: parsed.org || res.data.org || null,
+        ip, country: res.data.country || null,
+        asn: parsed.asn, as_org: parsed.org || res.data.org || null,
         provider: 'ipinfo'
       };
       geoipCache[ip] = { _ts: Date.now(), data: out };
       return out;
     } else {
-      // default: ip-api.com (no token)
-      // Using http://ip-api.com/json/<ip>?fields=status,country,countryCode,as,org,message
       const url = `http://ip-api.com/json/${encodeURIComponent(ip)}?fields=status,country,countryCode,as,org,message`;
       res = await axios.get(url, { timeout: 10_000 });
       if (res.data && res.data.status === 'success') {
-        // res.data.as example: "AS15169 Google LLC"
         const parsed = parseAsField(res.data.as || res.data.org || '');
         const out = {
-          ip: ip,
-          country: res.data.country || null,
+          ip, country: res.data.country || null,
           countryCode: res.data.countryCode || null,
-          asn: parsed.asn,
-          as_org: parsed.org || res.data.org || null,
+          asn: parsed.asn, as_org: parsed.org || res.data.org || null,
           provider: 'ip-api'
         };
         geoipCache[ip] = { _ts: Date.now(), data: out };
@@ -160,52 +155,46 @@ async function geoipLookupExternal(ip) {
     }
   } catch (e) {
     logWarn(`GeoIP lookup failed for ${ip}: ${e.message}`);
-    // store a lightweight negative cache to avoid repeated failing requests (short TTL)
     geoipCache[ip] = { _ts: Date.now() - (GEOIP_CACHE_TTL_SECS * 500), data: { ip, country: null, asn: null, as_org: null, provider: GEOIP_PROVIDER } };
     return geoipCache[ip].data;
   }
 }
 
 function parseAsField(asField) {
-  // Attempts to parse "AS15169 Google LLC" into { asn: 15169, org: "Google LLC" }
   if (!asField || typeof asField !== 'string') return { asn: null, org: null };
   const match = asField.match(/AS(\d+)\s*(.*)/i);
   if (match) {
     return { asn: parseInt(match[1], 10), org: match[2] ? match[2].trim() : null };
   }
-  // fallback: maybe the value is only a number or only org
   const num = asField.match(/\d+/);
   return { asn: num ? parseInt(num[0], 10) : null, org: asField };
 }
 
-// ====== Maltiverse integration with caching and quota ======
+// ====== Maltiverse — ONE-SHOT per IP (result cached, never re-queried in periodic loop) ======
 function resetMaltiverseQuota() {
   maltiverseRequestCount = 0;
   maltiverseQuotaExceeded = false;
 }
 setInterval(resetMaltiverseQuota, MALTIVERSE_INTERVAL_MS);
-resetMaltiverseQuota(); // start fresh
+resetMaltiverseQuota();
 
 async function getMaltiverseInfo(ip) {
-  // If no API key, skip Maltiverse but mark as skipped
   if (!MALTIVERSE_API_KEY) {
-    return { reputation: "Disabled (no API key)", tags: [] };
+    return { reputation: 'Disabled (no API key)', tags: [] };
   }
 
-  // Check cache first
+  // ONE-SHOT: if cached (even expired-but-present), skip re-query in continuous mode
   const cached = maltiverseCache[ip];
-  if (cached && !isExpired(cached)) {
-    return cached.data;
+  if (cached) {
+    return cached.data; // always return cached result — no repeat calls
   }
 
   if (maltiverseQuotaExceeded || maltiverseRequestCount >= MALTIVERSE_MAX_REQUESTS) {
     maltiverseQuotaExceeded = true;
-    return { reputation: "Skipped (API quota limit reached)", tags: [] };
+    return { reputation: 'Skipped (API quota limit reached)', tags: [] };
   }
 
   try {
-    // Maltiverse API: GET https://api.maltiverse.com/ip/{ip}
-    // Provide Authorization header if required. Some APIs accept Bearer token or x-api-key.
     const headers = {
       'Accept': 'application/json',
       'Authorization': `Bearer ${MALTIVERSE_API_KEY}`,
@@ -220,29 +209,73 @@ async function getMaltiverseInfo(ip) {
       };
       maltiverseCache[ip] = { _ts: Date.now(), data: out };
       return out;
-    } else {
-      return { reputation: "Unknown", tags: [] };
     }
+    return { reputation: 'Unknown', tags: [] };
   } catch (e) {
-    // Detect quota or 403 responses
     if (e.response && (e.response.status === 403 || e.response.status === 429)) {
       maltiverseQuotaExceeded = true;
-      logWarn("[!] Maltiverse API quota or access error. Maltiverse checks will be skipped until the quota resets.");
-      return { reputation: "Skipped (API quota/exhausted)", tags: [] };
+      logWarn('[!] Maltiverse API quota or access error. Skipping until quota resets.');
+      return { reputation: 'Skipped (API quota/exhausted)', tags: [] };
     }
     if (e.response && e.response.status === 404) {
-      const out = { reputation: "Unknown (not in Maltiverse)", tags: [] };
+      const out = { reputation: 'Unknown (not in Maltiverse)', tags: [] };
       maltiverseCache[ip] = { _ts: Date.now(), data: out };
       return out;
     }
-    return { reputation: "Error", tags: [e.message] };
+    return { reputation: 'Error', tags: [e.message] };
+  }
+}
+
+// ====== Spamhaus DNSBL — ONE-SHOT per IP via zen.spamhaus.org (DNS, no API key needed) ======
+// Return codes: 127.0.0.2=SBL, 127.0.0.3=SBL-CSS, 127.0.0.4-7=XBL, 127.0.0.10-11=PBL
+const SPAMHAUS_CODES = {
+  '127.0.0.2':  'SBL (Spamhaus Block List)',
+  '127.0.0.3':  'SBL-CSS (Spamhaus CSS)',
+  '127.0.0.4':  'XBL (Exploits Block List)',
+  '127.0.0.5':  'XBL (Exploits Block List)',
+  '127.0.0.6':  'XBL (Exploits Block List)',
+  '127.0.0.7':  'XBL (Exploits Block List)',
+  '127.0.0.10': 'PBL (Policy Block List - ISP)',
+  '127.0.0.11': 'PBL (Policy Block List - Spamhaus)',
+};
+
+async function getSpamhausInfo(ip) {
+  // Skip IPv6 — Spamhaus ZEN is IPv4 only
+  if (ip.includes(':')) {
+    return { listed: false, codes: [], note: 'IPv6 not supported by zen.spamhaus.org' };
+  }
+
+  // ONE-SHOT: always return cached result if present, no repeat DNS queries
+  const cached = spamhausCache[ip];
+  if (cached) {
+    return cached.data;
+  }
+
+  const reversed = ip.split('.').reverse().join('.');
+  const query = `${reversed}.zen.spamhaus.org`;
+
+  try {
+    const addresses = await dns.resolve4(query);
+    const codes = addresses.map(a => SPAMHAUS_CODES[a] || `Listed (${a})`);
+    const out = { listed: true, codes };
+    spamhausCache[ip] = { _ts: Date.now(), data: out };
+    return out;
+  } catch (e) {
+    if (e.code === 'ENOTFOUND' || e.code === 'ENODATA') {
+      const out = { listed: false, codes: [] };
+      spamhausCache[ip] = { _ts: Date.now(), data: out };
+      return out;
+    }
+    logWarn(`Spamhaus DNS lookup failed for ${ip}: ${e.message}`);
+    return { listed: null, codes: [], note: `DNS error: ${e.message}` };
   }
 }
 
 // ====== Core scan & output ======
 async function lookupIP(ip) {
-  const geo = await geoipLookupExternal(ip);
+  const geo        = await geoipLookupExternal(ip);
   const maltiverse = await getMaltiverseInfo(ip);
+  const spamhaus   = await getSpamhausInfo(ip);
 
   console.log(`\nIP: ${ip}`);
   console.log('  ASN:     ', geo.as_org || 'Not found', `(AS${geo.asn || 'N/A'})`);
@@ -250,6 +283,13 @@ async function lookupIP(ip) {
   console.log('  Maltiverse Reputation:', maltiverse.reputation);
   if (maltiverse.tags && maltiverse.tags.length > 0) {
     console.log('  Maltiverse Tags:', maltiverse.tags.join(', '));
+  }
+  if (spamhaus.listed === true) {
+    console.log('  Spamhaus DNSBL: LISTED -', spamhaus.codes.join(', '));
+  } else if (spamhaus.listed === false) {
+    console.log('  Spamhaus DNSBL: Clean');
+  } else {
+    console.log('  Spamhaus DNSBL:', spamhaus.note || 'Unknown');
   }
 }
 
@@ -270,37 +310,43 @@ async function runGeoIPScan(dnsList, label) {
   const myip = await getMyPublicIP();
   if (!myip) return;
 
-  // Only run scan if IP changed (to reduce external calls)
   if (myip !== lastIP) {
     lastIP = myip;
     const ips = Array.from(new Set([myip, ...dnsList]));
     console.log(`\nUsing DNS list: [${label}]`);
-
     for (const ip of ips) {
       if (maltiverseQuotaExceeded) {
-        logWarn("[!] Maltiverse checks are paused due to quota. Only GeoIP lookups will be performed.");
+        logWarn('[!] Maltiverse checks are paused due to quota. Only GeoIP + Spamhaus lookups will be performed.');
       }
       await lookupIP(ip);
     }
   } else {
-    logInfo("No IP change detected, skipping scan.");
+    logInfo('No IP change detected, skipping scan.');
   }
 }
 
 // ====== Main ======
 async function main() {
   logInfo('Starting scanner (no MMDB)');
-
-  // Ensure cache folder exists (persisted caches reduce API hits)
   ensureCacheDir();
 
-  // initial scan
-  await runGeoIPScan(publicDNS, 'Public DNS');
+  // Support one-shot mode: node geoip.js <ip>
+  const targetIP = process.argv[2];
+  if (targetIP) {
+    logInfo(`One-shot lookup for: ${targetIP}`);
+    await lookupIP(targetIP);
+    saveCache('geoip_cache', geoipCache);
+    saveCache('maltiverse_cache', maltiverseCache);
+    saveCache('spamhaus_cache', spamhausCache);
+    process.exit(0);
+    return;
+  }
 
-  // optional provider/home DNS
+  // Continuous mode: initial scan + hourly interval
+  // NOTE: Maltiverse and Spamhaus are ONE-SHOT — cached results are reused, no repeat API/DNS calls
+  await runGeoIPScan(publicDNS, 'Public DNS');
   // await runGeoIPScan(providerDNS, 'Provider/Home DNS');
 
-  // periodic check: every hour by default (can be changed by env var)
   const intervalMs = parseInt(process.env.SCAN_INTERVAL_MS || String(60 * 60 * 1000), 10);
   setInterval(async () => {
     try {
