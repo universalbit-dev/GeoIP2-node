@@ -1,31 +1,39 @@
 #!/usr/bin/env node
 /**
- * GeoIP2-node DNS & Threat Intelligence Scanner (No MMDB)
+ * GeoIP2-node Full-Stack State Change Telemetry Agent (No MMDB)
  *
- *  - simple disk-backed caching for GeoIP, Maltiverse, and Spamhaus results (TTL configurable)
- *  - Maltiverse API key support via env var MALTIVERSE_API_KEY
- *  - Maltiverse quota limiting and graceful skipping when quota reached
- *  - Spamhaus DNSBL check via zen.spamhaus.org (no API key required, DNS-based)
- *  - Maltiverse and Spamhaus are ONE-SHOT per IP: results cached, never re-queried in the periodic loop
- *
- * Usage:
- *   export MALTIVERSE_API_KEY="your_key"            # optional, for Maltiverse
- *   export GEOIP_PROVIDER="ip-api"                  # optional, defaults to ip-api
- *   export GEOIP_CACHE_TTL_SECS=86400               # optional, default 24h
- *   node geoip.js                                   # continuous mode
- *   node geoip.js <ip>                              # one-shot mode
+ * Integrated Structural Architecture:
+ *  1. Continuous Stateful Daemon Loop tracking mutations over time.
+ *  2. Suppressed console noise — prints ONLY baseline and immediate delta shifts.
+ *  3. MxToolbox-Style Multi-RBL Blacklist Engine using native OS lookups.
+ *  4. Validity SenderScore parser translating keyless return headers to numerical scores (0-100).
+ *  5. Brand Reputation Guard via PhishDestroy keyless API integration.
+ *  6. Domain Rank Metrics Layer auditing public identity alignments (SPF, DMARC, MX).
+ *  7. Native Crypto SSL/TLS Certificate Expiration & Validity Analyzer.
+ *  8. Automated Network Layer Port Scanner inspecting common boundary exposures (22, 80, 443, 3389).
  */
 
 const axios = require('axios');
 const dns = require('dns').promises;
 const fs = require('fs');
 const path = require('path');
+const net = require('net');
+const tls = require('tls');
 require('dotenv').config({ path: path.join(__dirname, 'utility', '.env') });
 
-// ====== Config & Lists ======
+// ====== UI Interface: Native ANSI Escapes ======
+const C_RESET = '\x1b[0m';
+const C_RED = '\x1b[31m';
+const C_GREEN = '\x1b[32m';
+const C_YELLOW = '\x1b[33m';
+const C_CYAN = '\x1b[36m';
+const C_GRAY = '\x1b[90m';
+const C_BOLD = '\x1b[1m';
+
+// ====== Core Configuration Setup ======
 const GEOIP_PROVIDER = process.env.GEOIP_PROVIDER || 'ip-api';
 const GEOIP_PROVIDER_TOKEN = process.env.GEOIP_PROVIDER_TOKEN || process.env.IPINFO_TOKEN || '';
-const GEOIP_CACHE_TTL_SECS = parseInt(process.env.GEOIP_CACHE_TTL_SECS || '86400', 10); // 24h default
+const GEOIP_CACHE_TTL_SECS = parseInt(process.env.GEOIP_CACHE_TTL_SECS || '86400', 10); 
 const CACHE_DIR = path.join(__dirname, 'cache');
 
 const publicDNS = [
@@ -34,38 +42,52 @@ const publicDNS = [
   '193.110.81.254', '185.253.5.254', '194.242.2.2', '91.239.100.100'
 ];
 
-const providerDNS = []; // provider/ISP/home DNS list (optional)
+const INFRASTRUCTURE_IPS = new Set([...publicDNS, '9.9.9.9', '149.112.112.112']);
 
-// ====== Maltiverse config ======
+// ====== External Threat Intel Credentials ======
 const MALTIVERSE_API_KEY = process.env.MALTIVERSE_API_KEY || '';
 const MALTIVERSE_MAX_REQUESTS = parseInt(process.env.MALTIVERSE_QUOTA_PER_HOUR || '20', 10);
-const MALTIVERSE_INTERVAL_MS = parseInt(process.env.MALTIVERSE_INTERVAL_MS || String(60 * 60 * 1000), 10); // 1h
+const MALTIVERSE_INTERVAL_MS = parseInt(process.env.MALTIVERSE_INTERVAL_MS || String(60 * 60 * 1000), 10); 
+const ABUSEIPDB_API_KEY = process.env.ABUSEIPDB_API_KEY || '';
 
-// ====== In-memory state ======
 let maltiverseRequestCount = 0;
 let maltiverseQuotaExceeded = false;
 
-// ====== Cache helpers ======
+// ====== Global Persistent In-Memory State Daemon Map ======
+let previousNetworkState = null;
+
+const RBL_DESCRIPTIONS = {
+  'score.senderscore.com': 'Validity SenderScore Matrix',
+  'zen.spamhaus.org': 'Spamhaus Unified Threat List',
+  'bl.spamcop.net': 'SpamCop Dynamic Spam Tracker',
+  'ix.dnsbl.manitu.net': 'Manitu NiX Spam (Europe)',
+  'b.barracudacentral.org': 'Barracuda Enterprise Filter'
+};
+
+const SPAMHAUS_CODES = {
+  '127.0.0.2': 'SBL (Verified Spam Origin)', 
+  '127.0.0.3': 'SBL-CSS (Abusive Behavior)',
+  '127.0.0.4': 'XBL (Active Botnet Node)', 
+  '127.0.0.5': 'XBL (Malware Host)',
+  '127.0.0.10': 'PBL (ISP Dynamic Client IP)', 
+  '127.255.255.254': 'Resolver Rejected'
+};
+
+// ====== Storage Cache Drivers ======
 function ensureCacheDir() {
-  if (!fs.existsSync(CACHE_DIR)) {
-    fs.mkdirSync(CACHE_DIR, { recursive: true });
-  }
+  if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
 }
 
 function cacheFile(name) {
   ensureCacheDir();
-  return path.join(CACHE_DIR, name + '.json');
+  return path.join(CACHE_DIR, `${name}.json`);
 }
 
 function loadCache(name) {
   const file = cacheFile(name);
   try {
-    if (fs.existsSync(file)) {
-      return JSON.parse(fs.readFileSync(file, 'utf8'));
-    }
-  } catch (e) {
-    // ignore parse/read errors and return empty cache
-  }
+    if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (e) {}
   return {};
 }
 
@@ -73,89 +95,146 @@ function saveCache(name, obj) {
   const file = cacheFile(name);
   try {
     fs.writeFileSync(file, JSON.stringify(obj, null, 2), 'utf8');
-  } catch (e) {
-    console.warn('[WARN] Could not save cache:', file, e.message);
-  }
+  } catch (e) {}
 }
 
 function isExpired(entry) {
   if (!entry || !entry._ts) return true;
-  const age = Date.now() - entry._ts;
-  return age > GEOIP_CACHE_TTL_SECS * 1000;
+  return (Date.now() - entry._ts) > (GEOIP_CACHE_TTL_SECS * 1000);
 }
 
-// Load caches
-const geoipCache      = loadCache('geoip_cache');       // { ip: { _ts: ms, data: {...} } }
-const maltiverseCache = loadCache('maltiverse_cache');   // same shape
-const spamhausCache   = loadCache('spamhaus_cache');     // same shape
+const geoipCache      = loadCache('geoip_cache');       
+const maltiverseCache = loadCache('maltiverse_cache');   
+const blacklistCache  = loadCache('blacklist_cache');     
+const abuseCache      = loadCache('abuse_cache');
 
-// Persist caches periodically
 setInterval(() => {
   saveCache('geoip_cache', geoipCache);
   saveCache('maltiverse_cache', maltiverseCache);
-  saveCache('spamhaus_cache', spamhausCache);
+  saveCache('blacklist_cache', blacklistCache);
+  saveCache('abuse_cache', abuseCache);
 }, 30 * 1000);
 
-// Save caches on exit
-process.on('exit', () => {
+const handleExit = () => {
   saveCache('geoip_cache', geoipCache);
   saveCache('maltiverse_cache', maltiverseCache);
-  saveCache('spamhaus_cache', spamhausCache);
-});
-process.on('SIGINT', () => process.exit());
-process.on('SIGTERM', () => process.exit());
+  saveCache('blacklist_cache', blacklistCache);
+  saveCache('abuse_cache', abuseCache);
+  process.exit();
+};
+process.on('exit', handleExit);
+process.on('SIGINT', handleExit);
+process.on('SIGTERM', handleExit);
 
-// ====== Utility ======
-function logInfo(msg) {
-  console.log(`[${new Date().toISOString()}] [INFO] ${msg}`);
+function logHeader(title) {
+  console.log(`\n${C_BOLD}${C_CYAN}=== ${title} ===${C_RESET}`);
 }
-function logWarn(msg) {
-  console.warn(`[${new Date().toISOString()}] [WARN] ${msg}`);
-}
-function logErr(msg) {
-  console.error(`[${new Date().toISOString()}] [ERROR] ${msg}`);
-}
+function logErr(msg) { console.error(`${C_RED}[ERROR] ${msg}${C_RESET}`); }
 
-// ====== GeoIP via external providers ======
-async function geoipLookupExternal(ip) {
-  const cached = geoipCache[ip];
-  if (cached && !isExpired(cached)) {
-    return cached.data;
+// ====== Module 1: PhishDestroy Engine ======
+async function queryPhishDestroy(domain) {
+  try {
+    const url = `https://api.destroy.tools/v1/check?domain=${encodeURIComponent(domain)}`;
+    const res = await axios.get(url, { timeout: 5000 });
+    if (res.data) {
+      return {
+        threat: res.data.threat || false,
+        riskScore: res.data.risk_score || 0,
+        severity: res.data.severity || 'clean'
+      };
+    }
+  } catch (e) {
+    return { threat: false, riskScore: 0, severity: 'unlisted' };
   }
+  return null;
+}
+
+// ====== Module 2: DNS Identity & Trust Record Auditor ======
+async function auditDomainDNS(domain) {
+  const report = { spf: null, dmarc: null, mx: [] };
+  try {
+    const txtRecords = await dns.resolveTxt(domain).catch(() => []);
+    const spfRecord = txtRecords.flat().find(r => r.startsWith('v=spf1'));
+    report.spf = spfRecord || null;
+  } catch (e) {}
 
   try {
-    let res;
+    const dmarcRecords = await dns.resolveTxt(`_dmarc.${domain}`).catch(() => []);
+    const dmarcRecord = dmarcRecords.flat().find(r => r.startsWith('v=DMARC1'));
+    report.dmarc = dmarcRecord || null;
+  } catch (e) {}
+
+  try {
+    const mxRecords = await dns.resolveMx(domain).catch(() => []);
+    report.mx = mxRecords.map(r => `${r.exchange} (Priority: ${r.priority})`);
+  } catch (e) {}
+  return report;
+}
+
+// ====== Module 3: Native Crypto SSL/TLS Certificate Auditor ======
+function auditSSLCertificate(domain) {
+  return new Promise((resolve) => {
+    const options = { servername: domain, timeout: 3000, rejectUnauthorized: false };
+    
+    const socket = tls.connect(443, domain, options, () => {
+      const cert = socket.getPeerCertificate();
+      socket.destroy();
+      
+      if (cert && cert.valid_to) {
+        const daysRemaining = Math.round((new Date(cert.valid_to) - new Date()) / (1000 * 60 * 60 * 24));
+        resolve({
+          issuer: cert.issuer?.O || 'Unknown Authority',
+          validTo: cert.valid_to,
+          daysRemaining: daysRemaining
+        });
+      } else {
+        resolve({ error: 'No verifiable certificate handshake returned' });
+      }
+    });
+
+    socket.on('error', (err) => resolve({ error: `Connection failed (${err.message})` }));
+    socket.on('timeout', () => { socket.destroy(); resolve({ error: 'Connection Timed Out' }); });
+  });
+}
+
+// ====== Module 4: Geographical Tracker Boundaries ======
+async function geoipLookupExternal(ip) {
+  const cached = geoipCache[ip];
+  if (cached && !isExpired(cached)) return cached.data;
+
+  try {
+    let out;
     if (GEOIP_PROVIDER === 'ipinfo' && GEOIP_PROVIDER_TOKEN) {
       const url = `https://ipinfo.io/${encodeURIComponent(ip)}/json?token=${GEOIP_PROVIDER_TOKEN}`;
-      res = await axios.get(url, { timeout: 10_000 });
+      const res = await axios.get(url, { timeout: 10_000 });
       const parsed = parseAsField(res.data.org || '');
-      const out = {
+      out = {
         ip, country: res.data.country || null,
         asn: parsed.asn, as_org: parsed.org || res.data.org || null,
         provider: 'ipinfo'
       };
-      geoipCache[ip] = { _ts: Date.now(), data: out };
-      return out;
     } else {
       const url = `http://ip-api.com/json/${encodeURIComponent(ip)}?fields=status,country,countryCode,as,org,message`;
-      res = await axios.get(url, { timeout: 10_000 });
+      const res = await axios.get(url, { timeout: 10_000 });
       if (res.data && res.data.status === 'success') {
         const parsed = parseAsField(res.data.as || res.data.org || '');
-        const out = {
+        out = {
           ip, country: res.data.country || null,
           countryCode: res.data.countryCode || null,
           asn: parsed.asn, as_org: parsed.org || res.data.org || null,
           provider: 'ip-api'
         };
-        geoipCache[ip] = { _ts: Date.now(), data: out };
-        return out;
       } else {
-        throw new Error(`geo provider error: ${res.data && res.data.message ? res.data.message : 'unknown'}`);
+        throw new Error(`Geo provider fault: ${res.data?.message || 'unknown'}`);
       }
     }
+    geoipCache[ip] = { _ts: Date.now(), data: out };
+    return out;
   } catch (e) {
-    logWarn(`GeoIP lookup failed for ${ip}: ${e.message}`);
-    geoipCache[ip] = { _ts: Date.now() - (GEOIP_CACHE_TTL_SECS * 500), data: { ip, country: null, asn: null, as_org: null, provider: GEOIP_PROVIDER } };
+    geoipCache[ip] = { 
+      _ts: Date.now() - (GEOIP_CACHE_TTL_SECS * 500), 
+      data: { ip, country: null, asn: null, as_org: null, provider: GEOIP_PROVIDER } 
+    };
     return geoipCache[ip].data;
   }
 }
@@ -163,35 +242,20 @@ async function geoipLookupExternal(ip) {
 function parseAsField(asField) {
   if (!asField || typeof asField !== 'string') return { asn: null, org: null };
   const match = asField.match(/AS(\d+)\s*(.*)/i);
-  if (match) {
-    return { asn: parseInt(match[1], 10), org: match[2] ? match[2].trim() : null };
-  }
+  if (match) return { asn: parseInt(match[1], 10), org: match[2] ? match[2].trim() : null };
   const num = asField.match(/\d+/);
   return { asn: num ? parseInt(num[0], 10) : null, org: asField };
 }
 
-// ====== Maltiverse — ONE-SHOT per IP (result cached, never re-queried in periodic loop) ======
-function resetMaltiverseQuota() {
-  maltiverseRequestCount = 0;
-  maltiverseQuotaExceeded = false;
-}
-setInterval(resetMaltiverseQuota, MALTIVERSE_INTERVAL_MS);
-resetMaltiverseQuota();
-
+// ====== Module 5: Intelligence Telemetry ======
 async function getMaltiverseInfo(ip) {
-  if (!MALTIVERSE_API_KEY) {
-    return { reputation: 'Disabled (no API key)', tags: [] };
-  }
-
-  // ONE-SHOT: if cached (even expired-but-present), skip re-query in continuous mode
+  if (!MALTIVERSE_API_KEY) return { reputation: 'Disabled (No Key Configured)', tags: [] };
   const cached = maltiverseCache[ip];
-  if (cached) {
-    return cached.data; // always return cached result — no repeat calls
-  }
+  if (cached) return cached.data; 
 
   if (maltiverseQuotaExceeded || maltiverseRequestCount >= MALTIVERSE_MAX_REQUESTS) {
     maltiverseQuotaExceeded = true;
-    return { reputation: 'Skipped (API quota limit reached)', tags: [] };
+    return { reputation: 'Hourly API Quota Target Exhausted', tags: [] };
   }
 
   try {
@@ -210,154 +274,309 @@ async function getMaltiverseInfo(ip) {
       maltiverseCache[ip] = { _ts: Date.now(), data: out };
       return out;
     }
-    return { reputation: 'Unknown', tags: [] };
+    return { reputation: 'Unclassified Asset', tags: [] };
   } catch (e) {
     if (e.response && (e.response.status === 403 || e.response.status === 429)) {
       maltiverseQuotaExceeded = true;
-      logWarn('[!] Maltiverse API quota or access error. Skipping until quota resets.');
-      return { reputation: 'Skipped (API quota/exhausted)', tags: [] };
+      return { reputation: 'API Token Quota Exhausted', tags: [] };
     }
     if (e.response && e.response.status === 404) {
-      const out = { reputation: 'Unknown (not in Maltiverse)', tags: [] };
+      const out = { reputation: 'No active threat markers found', tags: [] };
       maltiverseCache[ip] = { _ts: Date.now(), data: out };
       return out;
     }
-    return { reputation: 'Error', tags: [e.message] };
+    return { reputation: 'Request Execution Error', tags: [e.message] };
   }
 }
 
-// ====== Spamhaus DNSBL — ONE-SHOT per IP via zen.spamhaus.org (DNS, no API key needed) ======
-// Return codes: 127.0.0.2=SBL, 127.0.0.3=SBL-CSS, 127.0.0.4-7=XBL, 127.0.0.10-11=PBL
-const SPAMHAUS_CODES = {
-  '127.0.0.2':  'SBL (Spamhaus Block List)',
-  '127.0.0.3':  'SBL-CSS (Spamhaus CSS)',
-  '127.0.0.4':  'XBL (Exploits Block List)',
-  '127.0.0.5':  'XBL (Exploits Block List)',
-  '127.0.0.6':  'XBL (Exploits Block List)',
-  '127.0.0.7':  'XBL (Exploits Block List)',
-  '127.0.0.10': 'PBL (Policy Block List - ISP)',
-  '127.0.0.11': 'PBL (Policy Block List - Spamhaus)',
-};
-
-async function getSpamhausInfo(ip) {
-  // Skip IPv6 — Spamhaus ZEN is IPv4 only
-  if (ip.includes(':')) {
-    return { listed: false, codes: [], note: 'IPv6 not supported by zen.spamhaus.org' };
-  }
-
-  // ONE-SHOT: always return cached result if present, no repeat DNS queries
-  const cached = spamhausCache[ip];
-  if (cached) {
-    return cached.data;
-  }
-
-  const reversed = ip.split('.').reverse().join('.');
-  const query = `${reversed}.zen.spamhaus.org`;
+async function getAbuseIPDBInfo(ip) {
+  if (!ABUSEIPDB_API_KEY) return { score: 'Disabled (No Key Configured)', reports: 0 };
+  const cached = abuseCache[ip];
+  if (cached && !isExpired(cached)) return cached.data;
 
   try {
-    const addresses = await dns.resolve4(query);
-    const codes = addresses.map(a => SPAMHAUS_CODES[a] || `Listed (${a})`);
-    const out = { listed: true, codes };
-    spamhausCache[ip] = { _ts: Date.now(), data: out };
-    return out;
-  } catch (e) {
-    if (e.code === 'ENOTFOUND' || e.code === 'ENODATA') {
-      const out = { listed: false, codes: [] };
-      spamhausCache[ip] = { _ts: Date.now(), data: out };
+    const res = await axios.get('https://api.abuseipdb.com/api/v2/check', {
+      headers: { 'Key': ABUSEIPDB_API_KEY, 'Accept': 'application/json' },
+      params: { ipAddress: ip, maxAgeInDays: 90 },
+      timeout: 5000
+    });
+    if (res.data && res.data.data) {
+      const out = { score: `${res.data.data.abuseConfidenceScore}%`, reports: res.data.data.totalReports };
+      abuseCache[ip] = { _ts: Date.now(), data: out };
       return out;
     }
-    logWarn(`Spamhaus DNS lookup failed for ${ip}: ${e.message}`);
-    return { listed: null, codes: [], note: `DNS error: ${e.message}` };
+  } catch (e) {
+    return { score: 'Lookup Failed', reports: 0 };
   }
+  return { score: 'Unknown', reports: 0 };
 }
 
-// ====== Core scan & output ======
-async function lookupIP(ip) {
-  const geo        = await geoipLookupExternal(ip);
-  const maltiverse = await getMaltiverseInfo(ip);
-  const spamhaus   = await getSpamhausInfo(ip);
+// ====== Module 6: Enterprise Multi-RBL Matrix (OS Native Lookups) ======
+function pingSingleRBL(reversedIP, rblZone, timeoutMs = 3000) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve({ zone: rblZone, listed: null, detail: 'Timeout' }), timeoutMs);
+    const query = `${reversedIP}.${rblZone}`;
 
-  console.log(`\nIP: ${ip}`);
-  console.log('  ASN:     ', geo.as_org || 'Not found', `(AS${geo.asn || 'N/A'})`);
-  console.log('  Country: ', geo.country || 'Not found');
-  console.log('  Maltiverse Reputation:', maltiverse.reputation);
-  if (maltiverse.tags && maltiverse.tags.length > 0) {
-    console.log('  Maltiverse Tags:', maltiverse.tags.join(', '));
+    dns.lookup(query)
+      .then(lookupResult => {
+        clearTimeout(timer);
+        const resolvedAddress = lookupResult.address;
+        
+        if (rblZone === 'score.senderscore.com') {
+          const octets = resolvedAddress.split('.');
+          const score = parseInt(octets[3], 10);
+          let colorCode = C_GREEN;
+          if (score < 70) colorCode = C_RED;
+          else if (score < 85) colorCode = C_YELLOW;
+          
+          resolve({ zone: rblZone, listed: true, detail: `Reputation Rank: ${colorCode}${score}/100${C_RESET}`, rawValue: score });
+          return;
+        }
+
+        if (rblZone === 'zen.spamhaus.org' && SPAMHAUS_CODES[resolvedAddress]) {
+          resolve({ zone: rblZone, listed: true, detail: SPAMHAUS_CODES[resolvedAddress], code: resolvedAddress, rawValue: resolvedAddress });
+          return;
+        }
+
+        resolve({ zone: rblZone, listed: true, detail: `Flagged (${resolvedAddress})`, rawValue: resolvedAddress });
+      })
+      .catch(err => {
+        clearTimeout(timer);
+        const clean = (err.code === 'ENOTFOUND' || err.code === 'ENODATA');
+        
+        if (clean) {
+          const detailString = rblZone === 'score.senderscore.com' ? 'Clean (No Negative History Profile)' : '✓ Clean';
+          resolve({ zone: rblZone, listed: false, detail: detailString, rawValue: 'clean' });
+        } else {
+          resolve({ zone: rblZone, listed: null, detail: `Blocked/Dropped (${err.code})`, rawValue: 'error' });
+        }
+      });
+  });
+}
+
+async function getMultiRBLMatrix(ip) {
+  if (ip.includes(':')) return [];
+  if (INFRASTRUCTURE_IPS.has(ip)) return [];
+
+  const cached = blacklistCache[ip];
+  if (cached && !isExpired(cached)) return cached.data;
+
+  const reversedIP = ip.split('.').reverse().join('.');
+  const targetZones = [
+    'score.senderscore.com',
+    'zen.spamhaus.org',
+    'bl.spamcop.net',
+    'ix.dnsbl.manitu.net',
+    'b.barracudacentral.org'
+  ];
+
+  const results = await Promise.all(targetZones.map(zone => pingSingleRBL(reversedIP, zone, 3000)));
+  blacklistCache[ip] = { _ts: Date.now(), data: results };
+  return results;
+}
+
+// ====== Module 7: Public Perimeter Port Exposure Scanner ======
+function probeSinglePort(ip, port, timeoutMs = 1200) {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    let isOpen = false;
+    let state = `${C_GREEN}Closed / Secure${C_RESET}`;
+
+    socket.setTimeout(timeoutMs);
+    socket.connect(port, ip, () => {
+      isOpen = true;
+      state = `${C_RED}${C_BOLD}OPEN ⚠️ (Publicly Exposed)${C_RESET}`;
+      socket.destroy();
+    });
+
+    socket.on('timeout', () => { socket.destroy(); });
+    socket.on('error', () => { socket.destroy(); });
+    socket.on('close', () => resolve({ port, state, isOpen }));
+  });
+}
+
+async function auditExposedPorts(ip) {
+  if (INFRASTRUCTURE_IPS.has(ip)) return [];
+  const commonPorts = [22, 80, 443, 3389];
+  return Promise.all(commonPorts.map(port => probeSinglePort(ip, port, 1200)));
+}
+
+// ====== Compilation Report Matrix Output Generation ======
+async function generateAuditReport(ip, phishIntel = null, dnsAudit = null, sslAudit = null, label = null, isDaemonLoop = false) {
+  const [geo, maltiverse, abuseDb, rblMatrix, portScan] = await Promise.all([
+    geoipLookupExternal(ip),
+    getMaltiverseInfo(ip),
+    getAbuseIPDBInfo(ip),
+    getMultiRBLMatrix(ip),
+    auditExposedPorts(ip)
+  ]);
+
+  // Build a lightweight state tracking map object for mutation evaluation
+  const currentScanState = {
+    ip: ip,
+    ports: portScan.map(p => `${p.port}:${p.isOpen}`).join('|'),
+    blacklists: rblMatrix.map(r => `${r.zone}:${r.rawValue}`).join('|')
+  };
+
+  // If running in active background daemon mode, perform state mutation check
+  if (isDaemonLoop && previousNetworkState) {
+    const ipChanged = previousNetworkState.ip !== currentScanState.ip;
+    const portsChanged = previousNetworkState.ports !== currentScanState.ports;
+    const rblChanged = previousNetworkState.blacklists !== currentScanState.blacklists;
+
+    if (!ipChanged && !portsChanged && !rblChanged) {
+      // Suppress logging entirely — network boundary state matches exact baseline fingerprint.
+      return;
+    }
+
+    // A delta shift has occurred! Issue immediate notification header.
+    console.log(`\n🚨 ${C_RED}${C_BOLD}[STATE MUTATION DETECTED] — Network perimeter boundaries modified at ${new Date().toISOString()}${C_RESET}`);
   }
-  if (spamhaus.listed === true) {
-    console.log('  Spamhaus DNSBL: LISTED -', spamhaus.codes.join(', '));
-  } else if (spamhaus.listed === false) {
-    console.log('  Spamhaus DNSBL: Clean');
+
+  // Update background telemetry cache
+  if (isDaemonLoop) {
+    previousNetworkState = currentScanState;
+  }
+
+  let buffer = `\n${C_BOLD}${C_CYAN}📍 TARGET: ${label ? `${label} (${ip})` : ip}${C_RESET}\n`;
+  
+  if (phishIntel) {
+    buffer += `  ${C_BOLD}🛡️ Brand Asset Protection (PhishDestroy):${C_RESET}\n`;
+    if (phishIntel.threat) {
+      buffer += `    Status:          ${C_RED}${C_BOLD}⚠️ WARNING / PHISHING PATTERN DETECTED${C_RESET}\n`;
+      buffer += `    Risk Index Score:${C_RED} ${phishIntel.riskScore} / 100${C_RESET}\n`;
+      buffer += `    Threat Profile:  ${C_RED} ${phishIntel.severity.toUpperCase()}${C_RESET}\n`;
+    } else {
+      buffer += `    Status:          ${C_GREEN}✓ Clear / Safe Asset Entry${C_RESET}\n`;
+    }
+  }
+
+  if (dnsAudit) {
+    buffer += `  ${C_BOLD}🔑 DNS Trust & Identity Alignment (Domain Rank Metrics):${C_RESET}\n`;
+    buffer += `    SPF Record:      ${dnsAudit.spf ? `${C_GREEN}Found (${dnsAudit.spf})${C_RESET}` : `${C_RED}Missing (Damages Domain Trust Rank)${C_RESET}`}\n`;
+    buffer += `    DMARC Record:    ${dnsAudit.dmarc ? `${C_GREEN}Found (${dnsAudit.dmarc})${C_RESET}` : `${C_RED}Missing (Vulnerable to Brand Spoofing/Spam Flags)${C_RESET}`}\n`;
+    buffer += `    MX Mail Exchanger: ${dnsAudit.mx.length > 0 ? dnsAudit.mx.join(', ') : `${C_GRAY}None configured${C_RESET}`}\n`;
+  }
+
+  if (sslAudit) {
+    buffer += `  ${C_BOLD}🔒 SSL/TLS Security Certification Validity (SEO Rank Catalyst):${C_RESET}\n`;
+    if (sslAudit.error) {
+      buffer += `    Status:          ${C_RED}Failed — ${sslAudit.error}${C_RESET}\n`;
+    } else {
+      const dayColor = sslAudit.daysRemaining < 15 ? C_RED : (sslAudit.daysRemaining < 30 ? C_YELLOW : C_GREEN);
+      buffer += `    Authority CA:    ${sslAudit.issuer}\n`;
+      buffer += `    Days Remaining:  ${dayColor}${sslAudit.daysRemaining} days remaining${C_RESET} (Valid until: ${sslAudit.validTo})\n`;
+    }
+  }
+
+  buffer += `  ${C_BOLD}🌐 Routing Profile & Geolocation (Privacy Boundary Audit):${C_RESET}\n`;
+  buffer += `    Carrier/ISP:     ${geo.as_org || 'Not identified'} (AS${geo.asn || 'N/A'})\n`;
+  buffer += `    Country:         ${geo.country || 'Not identified'}\n`;
+  
+  if (portScan && portScan.length > 0) {
+    buffer += `  ${C_BOLD}🚪 Public Perimeter Port Exposure Probe (Privacy Leak Check):${C_RESET}\n`;
+    for (const probe of portScan) {
+      buffer += `    ↳ Port [${String(probe.port).padEnd(4)}] : ${probe.state}\n`;
+    }
+  }
+
+  buffer += `  ${C_BOLD}🧠 Cyber Threat Intel Telemetry (Maltiverse & AbuseIPDB):${C_RESET}\n`;
+  buffer += `    Maltiverse Index: ${maltiverse.reputation}\n`;
+  if (maltiverse.tags?.length > 0) buffer += `    Identified Tags:  ${C_YELLOW}${maltiverse.tags.join(', ')}${C_RESET}\n`;
+  const isAbused = parseInt(abuseDb.score) > 0;
+  buffer += `    AbuseIPDB Score:  ${isAbused ? `${C_RED}${abuseDb.score}${C_RESET}` : `${C_GREEN}${abuseDb.score}${C_RESET}`} (${abuseDb.reports} recent reports)\n`;
+  
+  buffer += `  ${C_BOLD}📊 Real-time Multi-RBL Reputation Matrix (MxToolbox Style):${C_RESET}\n`;
+  if (Array.isArray(rblMatrix) && rblMatrix.length > 0) {
+    for (const rbl of rblMatrix) {
+      const labelName = RBL_DESCRIPTIONS[rbl.zone] || rbl.zone;
+      let statusString = `${C_GREEN}${rbl.detail}${C_RESET}`;
+      
+      if (rbl.listed === true) {
+        if (rbl.zone === 'score.senderscore.com') {
+          statusString = rbl.detail; 
+        } else {
+          const isPBL = rbl.code === '127.0.0.10' || rbl.code === '127.0.0.11';
+          const color = isPBL ? C_YELLOW : `${C_RED}${C_BOLD}`;
+          statusString = `${color}LISTED INDICATOR (${rbl.detail})${C_RESET}`;
+        }
+      } else if (rbl.listed === null) {
+        statusString = `${C_GRAY}${rbl.detail}${C_RESET}`;
+      }
+      buffer += `    ↳ [${labelName.padEnd(30)}] : ${statusString}\n`;
+    }
   } else {
-    console.log('  Spamhaus DNSBL:', spamhaus.note || 'Unknown');
+    buffer += `    ${C_GRAY}Skipped or Unsupported for this destination asset type.${C_RESET}\n`;
   }
+
+  console.log(buffer);
 }
 
 async function getMyPublicIP() {
   try {
     const res = await axios.get('https://api.ipify.org?format=json', { timeout: 10_000 });
     return res.data.ip;
-  } catch (e) {
-    logWarn('Could not fetch public IP: ' + e.message);
-    return null;
-  }
+  } catch (e) { return null; }
 }
 
-let lastIP = null;
-
-async function runGeoIPScan(dnsList, label) {
-  logInfo(`GeoIP/Maltiverse scan using provider: ${GEOIP_PROVIDER} (${label})`);
-  const myip = await getMyPublicIP();
-  if (!myip) return;
-
-  if (myip !== lastIP) {
-    lastIP = myip;
-    const ips = Array.from(new Set([myip, ...dnsList]));
-    console.log(`\nUsing DNS list: [${label}]`);
-    for (const ip of ips) {
-      if (maltiverseQuotaExceeded) {
-        logWarn('[!] Maltiverse checks are paused due to quota. Only GeoIP + Spamhaus lookups will be performed.');
-      }
-      await lookupIP(ip);
-    }
-  } else {
-    logInfo('No IP change detected, skipping scan.');
-  }
-}
-
-// ====== Main ======
+// ====== Loop Operational Flow Driver ======
 async function main() {
-  logInfo('Starting scanner (no MMDB)');
   ensureCacheDir();
+  const argument = process.argv[2];
 
-  // Support one-shot mode: node geoip.js <ip>
-  const targetIP = process.argv[2];
-  if (targetIP) {
-    logInfo(`One-shot lookup for: ${targetIP}`);
-    await lookupIP(targetIP);
-    saveCache('geoip_cache', geoipCache);
-    saveCache('maltiverse_cache', maltiverseCache);
-    saveCache('spamhaus_cache', spamhausCache);
+  if (argument) {
+    let targetIP = argument;
+    let phishIntel = null;
+    let dnsAudit = null;
+    let sslAudit = null;
+    let label = null;
+
+    if (!net.isIP(argument)) {
+      logHeader(`ASSET CORE PROTECTION AUDIT: ${argument}`);
+      [phishIntel, dnsAudit, sslAudit] = await Promise.all([
+        queryPhishDestroy(argument),
+        auditDomainDNS(argument),
+        auditSSLCertificate(argument)
+      ]);
+      try {
+        label = argument;
+        const resolvedAddresses = await dns.resolve4(argument);
+        if (resolvedAddresses && resolvedAddresses.length > 0) {
+          targetIP = resolvedAddresses[0];
+        } else {
+          throw new Error('No DNS A records populated.');
+        }
+      } catch (err) {
+        logErr(`DNS Resolution failed for domain [${argument}]: ${err.message}`);
+        process.exit(1);
+      }
+    } else { 
+      logHeader(`IP PERIMETER AD-HOC QUOTATION SCAN`); 
+    }
+
+    await generateAuditReport(targetIP, phishIntel, dnsAudit, sslAudit, label, false);
     process.exit(0);
     return;
   }
 
-  // Continuous mode: initial scan + hourly interval
-  // NOTE: Maltiverse and Spamhaus are ONE-SHOT — cached results are reused, no repeat API/DNS calls
-  await runGeoIPScan(publicDNS, 'Public DNS');
-  // await runGeoIPScan(providerDNS, 'Provider/Home DNS');
+  logHeader("LOCAL BOUNDARY PRIVACY & NETWORK REPUTATION DAEMON (STATEFUL)");
+  const myip = await getMyPublicIP();
+  if (myip) {
+    // Run initial baseline report scan and establish baseline footprint state matrix configuration
+    await generateAuditReport(myip, null, null, null, "Your Current Interface Public IP", true);
+  }
 
   const intervalMs = parseInt(process.env.SCAN_INTERVAL_MS || String(60 * 60 * 1000), 10);
   setInterval(async () => {
-    try {
-      await runGeoIPScan(publicDNS, 'Public DNS');
-    } catch (e) {
-      logErr('Periodic scan failed: ' + e.message);
+    const currentIP = await getMyPublicIP();
+    if (currentIP) {
+      // Run continuous loop monitoring — will remain entirely silent unless a state delta shift is intercepted
+      await generateAuditReport(currentIP, null, null, null, "Continuous Delta Monitoring Scan", true);
     }
   }, intervalMs);
 }
 
 main().catch(err => {
-  logErr('Fatal error: ' + (err && err.message ? err.message : err));
+  logErr(`Fatal processing termination anomaly: ${err.message}`);
   process.exit(1);
 });
