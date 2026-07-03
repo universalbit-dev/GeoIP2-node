@@ -11,6 +11,7 @@
  *  6. Domain Rank Metrics Layer auditing public identity alignments (SPF, DMARC, MX).
  *  7. Native Crypto SSL/TLS Certificate Expiration & Validity Analyzer.
  *  8. Automated Network Layer Port Scanner inspecting common boundary exposures (22, 80, 443, 3389).
+ *  9. Privacy-Preserving Friendly Tracking Layer classifying user intent.
  */
 
 const axios = require('axios');
@@ -231,11 +232,10 @@ async function geoipLookupExternal(ip) {
     geoipCache[ip] = { _ts: Date.now(), data: out };
     return out;
   } catch (e) {
-    geoipCache[ip] = { 
-      _ts: Date.now() - (GEOIP_CACHE_TTL_SECS * 500), 
-      data: { ip, country: null, asn: null, as_org: null, provider: GEOIP_PROVIDER } 
-    };
-    return geoipCache[ip].data;
+    // Graceful degrade fallback execution (Circuit Breaker baseline)
+    const fallbackData = { ip, country: 'Unknown Jurisdiction', asn: null, as_org: 'Circuit Breaker Fallback Active', provider: GEOIP_PROVIDER };
+    geoipCache[ip] = { _ts: Date.now() - (GEOIP_CACHE_TTL_SECS * 500), data: fallbackData };
+    return fallbackData;
   }
 }
 
@@ -401,6 +401,58 @@ async function auditExposedPorts(ip) {
   return Promise.all(commonPorts.map(port => probeSinglePort(ip, port, 1200)));
 }
 
+// ====== Module 8: Privacy-Preserving Friendly Tracking Classifier ======
+function classifyPrivacyContext(maltiverse, abuseDb, rblMatrix) {
+  const abuseScore = parseInt(abuseDb.score) || 0;
+  const isListedInRBL = rblMatrix.some(r => r.listed === true && r.zone !== 'score.senderscore.com');
+  const tags = maltiverse.tags || [];
+
+  // Identify privacy-conscious users instead of treating them as immediate threats
+  const isVpnOrTor = tags.includes('vpn') || tags.includes('tor') || tags.includes('proxy');
+
+  if (abuseScore > 75 || (isListedInRBL && maltiverse.reputation === 'bad')) {
+    return {
+      category: 'MALICIOUS_THREAT',
+      action: 'MITIGATE / BLOCK',
+      color: C_RED,
+      description: 'Host exhibits active malicious behavior signatures.'
+    };
+  }
+
+  if (isVpnOrTor || tags.includes('hosting')) {
+    return {
+      category: 'PRIVACY_PRESERVING_USER',
+      action: 'ALLOW WITH PRIVACY MODE',
+      color: C_YELLOW,
+      description: 'Legitimate user safeguarding identities via VPN/Tor/Proxy networks.'
+    };
+  }
+
+  return {
+    category: 'STANDARD_CLEAN_TRAFFIC',
+    action: 'PASS',
+    color: C_GREEN,
+    description: 'Verified residential or corporate operational boundary layer.'
+  };
+}
+
+// ====== Programmatic Snapshot Export Handler ======
+function exportTelemetrySnapshot(ip, classification, geo) {
+  const telemetryPath = path.join(CACHE_DIR, 'latest_telemetry.json');
+  const snapshot = {
+    timestamp: new Date().toISOString(),
+    target_ip: ip,
+    carrier: geo.as_org,
+    jurisdiction: geo.country,
+    friendly_tracking: {
+      category: classification.category,
+      recommended_action: classification.action,
+      profile: classification.description
+    }
+  };
+  fs.writeFileSync(telemetryPath, JSON.stringify(snapshot, null, 2), 'utf8');
+}
+
 // ====== Compilation Report Matrix Output Generation ======
 async function generateAuditReport(ip, phishIntel = null, dnsAudit = null, sslAudit = null, label = null, isDaemonLoop = false) {
   const [geo, maltiverse, abuseDb, rblMatrix, portScan] = await Promise.all([
@@ -411,35 +463,44 @@ async function generateAuditReport(ip, phishIntel = null, dnsAudit = null, sslAu
     auditExposedPorts(ip)
   ]);
 
-  // Build a lightweight state tracking map object for mutation evaluation
+  const privacyClassification = classifyPrivacyContext(maltiverse, abuseDb, rblMatrix);
+  exportTelemetrySnapshot(ip, privacyClassification, geo);
+
+  // Build a lightweight state tracking map object for mutation evaluation[cite: 1]
   const currentScanState = {
     ip: ip,
     ports: portScan.map(p => `${p.port}:${p.isOpen}`).join('|'),
     blacklists: rblMatrix.map(r => `${r.zone}:${r.rawValue}`).join('|')
   };
 
-  // If running in active background daemon mode, perform state mutation check
+  // If running in active background daemon mode, perform state mutation check[cite: 1]
   if (isDaemonLoop && previousNetworkState) {
     const ipChanged = previousNetworkState.ip !== currentScanState.ip;
     const portsChanged = previousNetworkState.ports !== currentScanState.ports;
     const rblChanged = previousNetworkState.blacklists !== currentScanState.blacklists;
 
     if (!ipChanged && !portsChanged && !rblChanged) {
-      // Suppress logging entirely — network boundary state matches exact baseline fingerprint.
+      // Suppress logging entirely — network boundary state matches exact baseline fingerprint.[cite: 1]
       return;
     }
 
-    // A delta shift has occurred! Issue immediate notification header.
+    // A delta shift has occurred! Issue immediate notification header.[cite: 1]
     console.log(`\n🚨 ${C_RED}${C_BOLD}[STATE MUTATION DETECTED] — Network perimeter boundaries modified at ${new Date().toISOString()}${C_RESET}`);
   }
 
-  // Update background telemetry cache
+  // Update background telemetry cache[cite: 1]
   if (isDaemonLoop) {
     previousNetworkState = currentScanState;
   }
 
   let buffer = `\n${C_BOLD}${C_CYAN}📍 TARGET: ${label ? `${label} (${ip})` : ip}${C_RESET}\n`;
   
+  // Friendly Tracking Intercept Section
+  buffer += `  ${C_BOLD}🛡️ Friendly Tracking Classification:${C_RESET}\n`;
+  buffer += `    Category:        ${privacyClassification.color}${C_BOLD}${privacyClassification.category}${C_RESET}\n`;
+  buffer += `    Action:          ${privacyClassification.color}${privacyClassification.action}${C_RESET}\n`;
+  buffer += `    Profile Context: ${C_GRAY}${privacyClassification.description}${C_RESET}\n\n`;
+
   if (phishIntel) {
     buffer += `  ${C_BOLD}🛡️ Brand Asset Protection (PhishDestroy):${C_RESET}\n`;
     if (phishIntel.threat) {
@@ -562,7 +623,7 @@ async function main() {
   logHeader("LOCAL BOUNDARY PRIVACY & NETWORK REPUTATION DAEMON (STATEFUL)");
   const myip = await getMyPublicIP();
   if (myip) {
-    // Run initial baseline report scan and establish baseline footprint state matrix configuration
+    // Run initial baseline report scan and establish baseline footprint state matrix configuration[cite: 1]
     await generateAuditReport(myip, null, null, null, "Your Current Interface Public IP", true);
   }
 
@@ -570,7 +631,7 @@ async function main() {
   setInterval(async () => {
     const currentIP = await getMyPublicIP();
     if (currentIP) {
-      // Run continuous loop monitoring — will remain entirely silent unless a state delta shift is intercepted
+      // Run continuous loop monitoring — will remain entirely silent unless a state delta shift is intercepted[cite: 1]
       await generateAuditReport(currentIP, null, null, null, "Continuous Delta Monitoring Scan", true);
     }
   }, intervalMs);
